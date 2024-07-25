@@ -1,0 +1,56 @@
+---
+# ROLE: POSTGRESQL
+#
+# DESCRIPTION:
+# This role sets up the baseline configuration for a PostgreSQL database.
+
+###############################################################################
+################### VARIABLE INITIALIZATION & TASK SETUP ######################
+###############################################################################
+
+# POSTGRESQL_ROOT_PASSWORD
+# Set the root password for the PostgreSQL system
+- name: POSTGRESQL_ROOT_PASSWORD set fact from env if possible
+  set_fact:
+    POSTGRESQL_ROOT_PASSWORD: "{{ lookup('env', 'POSTGRESQL_ROOT_PASSWORD') | default('') | trim }}"
+  when: lookup('env', 'POSTGRESQL_ROOT_PASSWORD') | default('', true) | trim != ''
+- name: POSTGRESQL_ROOT_PASSWORD prompt user input if unset
+  pause:
+    prompt: "SET POSTGRESQL_ROOT_PASSWORD"
+    echo: yes
+  register: input
+  when: POSTGRESQL_ROOT_PASSWORD is not defined
+- name: Set POSTGRESQL_ROOT_PASSWORD fact from user input
+  set_fact:
+    POSTGRESQL_ROOT_PASSWORD: "{{ input.user_input | default('') | trim }}"
+  when: POSTGRESQL_ROOT_PASSWORD is not defined
+
+###############################################################################
+############################ ROLE IMPLEMENTATION ##############################
+###############################################################################
+
+# Step 1: Install PostgreSQL on Server
+
+- name: Install PostgreSQL Server and Client
+  apt:
+    name:
+      - postgresql
+      - postgresql-client
+      - python3-psycopg2
+    state: present
+  become: yes
+
+- name: Start and enable PostgreSQL service
+  service:
+    name: postgresql
+    state: started
+    enabled: yes
+  become: yes
+
+# Step 2: Restart the PostgreSQL DB
+
+- name: Restart PostgreSQL
+  service:
+    name: postgresql
+    state: restarted
+  become: yes
