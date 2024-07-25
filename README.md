@@ -1,4 +1,4 @@
-BARK: MYSQL
+BARK: POSTGRESQL
 =========
 
 Install PostgreSQL with sane defaults.
