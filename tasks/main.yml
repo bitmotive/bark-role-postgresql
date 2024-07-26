@@ -2,14 +2,29 @@
 # ROLE: POSTGRESQL
 #
 # DESCRIPTION:
-# This role sets up the baseline configuration for a PostgreSQL database.
+# This role sets up the baseline configuration for a PostgreSQL database,
+# including optional configurations for public access and default databases/users.
 
 ###############################################################################
 ################### VARIABLE INITIALIZATION & TASK SETUP ######################
 ###############################################################################
 
-# POSTGRESQL_ROOT_PASSWORD
-# Set the root password for the PostgreSQL system
+# Set POSTGRESQL_PORT from environment or prompt for input
+- name: POSTGRESQL_PORT set fact from env if possible
+  set_fact:
+    POSTGRESQL_PORT: "{{ lookup('env', 'POSTGRESQL_PORT') | default('5432') | trim }}"
+  when: lookup('env', 'POSTGRESQL_PORT') | default('', true) | trim != ''
+- name: POSTGRESQL_PORT prompt user input if unset
+  pause:
+    prompt: "SET POSTGRESQL_PORT (default: 5432)"
+  register: input
+  when: POSTGRESQL_PORT is not defined
+- name: Set POSTGRESQL_PORT fact from user input
+  set_fact:
+    POSTGRESQL_PORT: "{{ input.user_input | default('5432') | trim }}"
+  when: POSTGRESQL_PORT is not defined
+
+# Set POSTGRESQL_ROOT_PASSWORD from environment or prompt for input
 - name: POSTGRESQL_ROOT_PASSWORD set fact from env if possible
   set_fact:
     POSTGRESQL_ROOT_PASSWORD: "{{ lookup('env', 'POSTGRESQL_ROOT_PASSWORD') | default('') | trim }}"
@@ -25,6 +40,68 @@
     POSTGRESQL_ROOT_PASSWORD: "{{ input.user_input | default('') | trim }}"
   when: POSTGRESQL_ROOT_PASSWORD is not defined
 
+# Set POSTGRESQL_PUBLIC_INTERFACE from environment or prompt for input
+- name: POSTGRESQL_PUBLIC_INTERFACE set fact from env if possible
+  set_fact:
+    POSTGRESQL_PUBLIC_INTERFACE: "{{ lookup('env', 'POSTGRESQL_PUBLIC_INTERFACE') | default('NO') | trim }}"
+  when: lookup('env', 'POSTGRESQL_PUBLIC_INTERFACE') | default('', true) | trim != ''
+- name: POSTGRESQL_PUBLIC_INTERFACE prompt user input if unset
+  pause:
+    prompt: "SET POSTGRESQL_PUBLIC_INTERFACE (YES/NO)"
+  register: input
+  when: POSTGRESQL_PUBLIC_INTERFACE is not defined
+- name: Set POSTGRESQL_PUBLIC_INTERFACE fact from user input
+  set_fact:
+    POSTGRESQL_PUBLIC_INTERFACE: "{{ input.user_input | default('NO') | trim }}"
+  when: POSTGRESQL_PUBLIC_INTERFACE is not defined
+
+# Set POSTGRESQL_DEFAULT_DB from environment or prompt for input
+- name: POSTGRESQL_DEFAULT_DB set fact from env if possible
+  set_fact:
+    POSTGRESQL_DEFAULT_DB: "{{ lookup('env', 'POSTGRESQL_DEFAULT_DB') | default('') | trim }}"
+  when: lookup('env', 'POSTGRESQL_DEFAULT_DB') | default('', true) | trim != ''
+- name: POSTGRESQL_DEFAULT_DB prompt user input if unset
+  pause:
+    prompt: "SET POSTGRESQL_DEFAULT_DB (Leave blank if not needed)"
+  register: input
+  when: POSTGRESQL_DEFAULT_DB is not defined
+- name: Set POSTGRESQL_DEFAULT_DB fact from user input
+  set_fact:
+    POSTGRESQL_DEFAULT_DB: "{{ input.user_input | default('') | trim }}"
+  when: POSTGRESQL_DEFAULT_DB is not defined
+
+# Set POSTGRESQL_DEFAULT_USER from environment or prompt for input
+- name: POSTGRESQL_DEFAULT_USER set fact from env if possible
+  set_fact:
+    POSTGRESQL_DEFAULT_USER: "{{ lookup('env', 'POSTGRESQL_DEFAULT_USER') | default('') | trim }}"
+  when: lookup('env', 'POSTGRESQL_DEFAULT_USER') | default('', true) | trim != ''
+- name: POSTGRESQL_DEFAULT_USER prompt user input if unset
+  pause:
+    prompt: "SET POSTGRESQL_DEFAULT_USER (Leave blank if not needed)"
+  register: input
+  when: POSTGRESQL_DEFAULT_USER is not defined
+- name: Set POSTGRESQL_DEFAULT_USER fact from user input
+  set_fact:
+    POSTGRESQL_DEFAULT_USER: "{{ input.user_input | default('') | trim }}"
+  when: POSTGRESQL_DEFAULT_USER is not defined
+
+# Set POSTGRESQL_DEFAULT_USER_PASSWORD from environment or prompt for input
+- name: POSTGRESQL_DEFAULT_USER_PASSWORD set fact from env if possible
+  set_fact:
+    POSTGRESQL_DEFAULT_USER_PASSWORD: "{{ lookup('env', 'POSTGRESQL_DEFAULT_USER_PASSWORD') | default('') | trim }}"
+  when: lookup('env', 'POSTGRESQL_DEFAULT_USER_PASSWORD') | default('', true) | trim != ''
+- name: POSTGRESQL_DEFAULT_USER_PASSWORD prompt user input if unset
+  pause:
+    prompt: "SET POSTGRESQL_DEFAULT_USER_PASSWORD (Leave blank if not needed)"
+    echo: yes
+  register: input
+  when: POSTGRESQL_DEFAULT_USER_PASSWORD is not defined
+- name: Set POSTGRESQL_DEFAULT_USER_PASSWORD fact from user input
+  set_fact:
+    POSTGRESQL_DEFAULT_USER_PASSWORD: "{{ input.user_input | default('') | trim }}"
+  when: POSTGRESQL_DEFAULT_USER_PASSWORD is not defined
+
+
 ###############################################################################
 ############################ ROLE IMPLEMENTATION ##############################
 ###############################################################################
@@ -35,9 +112,31 @@
   apt:
     name:
       - postgresql
-      - postgresql-client
+      - postgresql-contrib
       - python3-psycopg2
     state: present
+  become: yes
+
+# Task to get the PostgreSQL version
+- name: Get PostgreSQL major version
+  shell: |
+    psql --version | awk '{print $3}' | cut -d. -f1
+  register: postgresql_version_output
+  become: yes
+
+- name: Debug PostgreSQL version output
+  debug:
+    msg: "PostgreSQL version major: {{ postgresql_version_output.stdout }}"
+
+- name: Set PostgreSQL version fact
+  set_fact:
+    POSTGRESQL_VERSION: "{{ postgresql_version_output.stdout }}"
+
+- name: Set PostgreSQL port
+  lineinfile:
+    path: /etc/postgresql/{{ POSTGRESQL_VERSION }}/main/postgresql.conf
+    regexp: '^#port'
+    line: "port = {{ POSTGRESQL_PORT }}"
   become: yes
 
 - name: Start and enable PostgreSQL service
@@ -47,8 +146,84 @@
     enabled: yes
   become: yes
 
-# Step 2: Restart the PostgreSQL DB
+# Step 2: Configure PostgreSQL for Public Access if Needed
 
+- name: Allow PostgreSQL to listen on all interfaces
+  lineinfile:
+    path: /etc/postgresql/{{ POSTGRESQL_VERSION }}/main/postgresql.conf
+    regexp: '^#listen_addresses'
+    line: "listen_addresses = '*'"
+  become: yes
+  when: POSTGRESQL_PUBLIC_INTERFACE == 'YES'
+
+- name: Open PostgreSQL port in UFW
+  ufw:
+    rule: allow
+    port: "{{ POSTGRESQL_PORT }}"
+    state: enabled
+  become: yes
+  when: POSTGRESQL_PUBLIC_INTERFACE == 'YES'
+
+- name: Restart PostgreSQL to apply changes
+  service:
+    name: postgresql
+    state: restarted
+  become: yes
+  when: POSTGRESQL_PUBLIC_INTERFACE == 'YES'
+
+# Step 3: Create Default Database and User if specified
+- name: Ensure ansible-remote directory exists with correct permissions
+  file:
+    path: /tmp/ansible-remote
+    state: directory
+    mode: '0777'
+  become: yes
+
+- name: Create default database
+  community.postgresql.postgresql_db:
+    name: "{{ POSTGRESQL_DEFAULT_DB }}"
+  become: yes
+  become_user: postgres
+  when: POSTGRESQL_DEFAULT_DB != ''
+
+- name: Create default user
+  community.postgresql.postgresql_user:
+    db: "{{ POSTGRESQL_DEFAULT_DB }}"
+    name: "{{ POSTGRESQL_DEFAULT_USER }}"
+    password: "{{ POSTGRESQL_DEFAULT_USER_PASSWORD }}"
+    state: present
+    expires: infinity
+  environment:
+    PGOPTIONS: "-c password_encryption=scram-sha-256"
+  become: yes
+  become_user: postgres
+  when: POSTGRESQL_DEFAULT_USER_PASSWORD != '' and POSTGRESQL_DEFAULT_USER != '' and POSTGRESQL_DEFAULT_DB != ''
+
+- name: Grant all privileges on default database to default user
+  community.postgresql.postgresql_privs:
+    database: "{{ POSTGRESQL_DEFAULT_DB }}"
+    privs: ALL
+    type: schema
+    obj: public
+    roles: "{{ POSTGRESQL_DEFAULT_USER }}"
+  become: yes
+  become_user: postgres
+  when: POSTGRESQL_DEFAULT_USER != '' and POSTGRESQL_DEFAULT_DB != ''
+
+- name: Add pg_hba entry for default user
+  community.postgresql.postgresql_pg_hba:
+    dest: /etc/postgresql/{{ POSTGRESQL_VERSION }}/main/pg_hba.conf
+    contype: host
+    databases: "{{ POSTGRESQL_DEFAULT_DB }}"
+    method: scram-sha-256
+    users: "{{ POSTGRESQL_DEFAULT_USER }}"
+    source: all
+    create: yes
+  become: yes
+  become_user: postgres
+  when: POSTGRESQL_DEFAULT_USER != '' and POSTGRESQL_DEFAULT_DB != ''
+
+# Step 4: Restart PostgreSQL to apply any changes
 - name: Restart PostgreSQL
   service:
     name: postgresql
