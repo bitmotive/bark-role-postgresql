@@ -61,7 +61,7 @@ allow_world_readable_tmpfiles = True
 remote_tmp_dir_mode = 0777
 ```
 
-In addition, the following included task is needed to set the permissions for the temp directory: 
+In addition, the following included task may be needed to set the permissions for the temp directory: 
 
 ```
 - name: Ensure ansible-remote directory exists with correct permissions
@@ -70,6 +70,16 @@ In addition, the following included task is needed to set the permissions for th
     state: directory
     mode: '0777'
   become: yes 
+```
+
+If the above task runs, be sure to also remove it afterward:
+
+```
+- name: Remove ansible-remote directory
+  file:
+    path: /tmp/ansible-remote
+    state: absent
+  become: yes
 ```
 
 
